@@ -1,121 +1,48 @@
-import { NextRequest, NextResponse } from "next/server";
-import { db, isDbConfigured } from "@/db";
-import { users, employees, activityLogs } from "@/db/schema";
-import { comparePassword, signToken } from "@/lib/auth";
-import { ensureSeeded } from "@/db/seed";
+import { NextResponse } from "next/server";
+import { db } from "@/db";
+import { users } from "@/db/schema";
 import { eq, or } from "drizzle-orm";
-import * as devStore from "@/db/devStore";
 
-export async function POST(req: NextRequest) {
+export async function POST(request: Request) {
   try {
-    if (!isDbConfigured) {
-      await ensureSeeded();
-      const body = await req.json();
-      const { email, username, password } = body;
+    const body = await request.json();
+    const { email, password } = body;
 
-      const identifier = email || username;
-      if (!identifier || !password) {
-        return NextResponse.json({ message: "Username/Email and Password are required." }, { status: 400 });
-      }
-
-      const usersList = devStore.getUsers();
-      const user = usersList.find((u: any) => u.email === identifier || u.username === identifier);
-      if (!user) return NextResponse.json({ message: "Invalid credentials. User not found." }, { status: 401 });
-
-      const isMatch = await comparePassword(password, user.passwordHash || user.password || '');
-      if (!isMatch) return NextResponse.json({ message: "Invalid credentials. Password incorrect." }, { status: 401 });
-
-      const tokenPayload = { userId: user.id, email: user.email, username: user.username, role: user.role as "Admin" | "Employee", employeeId: user.employeeId };
-      const token = signToken(tokenPayload);
-
-      // append activity
-      const act = { id: Date.now(), userName: user.username, userRole: user.role, action: 'User Login', details: `User ${user.email} logged in successfully as ${user.role}.`, createdAt: new Date().toISOString() };
-      const p = require('path').join(process.cwd(),'src','db','devData.json');
-      const fs = require('fs');
-      const dataFile = fs.readFileSync(p,'utf8');
-      const json = JSON.parse(dataFile);
-      json.activityLogs = json.activityLogs || [];
-      json.activityLogs.push(act);
-      fs.writeFileSync(p, JSON.stringify(json,null,2),'utf8');
-
-      const response = NextResponse.json({ message: 'Login successful', token, user: tokenPayload });
-      response.cookies.set({ name: 'emp_token', value: token, httpOnly: true, secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 7 * 24 * 60 * 60 });
-      return response;
-    }
-    await ensureSeeded();
-
-    const body = await req.json();
-    const { email, username, password } = body;
-
-    const identifier = email || username;
-    if (!identifier || !password) {
-      return NextResponse.json(
-        { message: "Username/Email and Password are required." },
-        { status: 400 }
-      );
-
+    if (!email || !password) {
+      return NextResponse.json({ error: "Email and password are required" }, { status: 400 });
     }
 
-    const foundUsers = await db
-      .select()
+    const [user] = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        role: users.role,
+        password: users.password,
+        createdAt: users.createdAt,
+      })
       .from(users)
-      .where(or(eq(users.email, identifier), eq(users.username, identifier)));
+      .where(eq(users.email, email.toLowerCase().trim()));
 
-    const user = foundUsers[0];
-    if (!user) {
-      return NextResponse.json(
-        { message: "Invalid credentials. User not found." },
-        { status: 401 }
-      );
+    if (!user || user.password !== password) {
+      return NextResponse.json({ error: "Invalid email or password" }, { status: 401 });
     }
 
-    const isMatch = await comparePassword(password, user.passwordHash);
-    if (!isMatch) {
-      return NextResponse.json(
-        { message: "Invalid credentials. Password incorrect." },
-        { status: 401 }
-      );
-    }
+    // Generate token simulation (JWT payload representation)
+    const token = `jwt_ims_${user.id}_${Buffer.from(user.email).toString("base64")}_${Date.now()}`;
 
-    const tokenPayload = {
-      userId: user.id,
-      email: user.email,
-      username: user.username,
-      role: user.role as "Admin" | "Employee",
-      employeeId: user.employeeId,
-    };
-
-    const token = signToken(tokenPayload);
-
-    // Record login in activity log
-    await db.insert(activityLogs).values({
-      userName: user.username,
-      userRole: user.role,
-      action: "User Login",
-      details: `User ${user.email} logged in successfully as ${user.role}.`,
-    });
-
-    const response = NextResponse.json({
-      message: "Login successful",
+    return NextResponse.json({
       token,
-      user: tokenPayload,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        createdAt: user.createdAt,
+      },
     });
-
-    response.cookies.set({
-      name: "emp_token",
-      value: token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 7 * 24 * 60 * 60, // 7 days
-    });
-
-    return response;
   } catch (error: any) {
-    console.error("Login Error:", error);
-    return NextResponse.json(
-      { message: error.message || "Internal server error during login." },
-      { status: 500 }
-    );
+    console.error("Login error:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
